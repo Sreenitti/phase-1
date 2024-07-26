@@ -49,9 +49,13 @@ for epoch in range(1):
     # Send activations to server
     response = requests.post("http://localhost:5001/process_activations", json={"activations": initial_activations.tolist()})
     server_activations = np.array(response.json()["activations"])
-
+    
     # Forward pass through final model
     final_model.fit(server_activations, y_train_client, epochs=1, verbose=0)
+
+# Evaluate final model on training set
+train_loss, train_accuracy = final_model.evaluate(server_activations, y_train_client, verbose=0)
+print(f'Training Accuracy: {train_accuracy:.4f}')
 
 # Evaluate final model on test set
 try:
