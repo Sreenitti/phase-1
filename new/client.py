@@ -4,6 +4,7 @@ from tensorflow.keras.datasets import mnist
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
 import requests
+from sklearn.metrics import accuracy_score, precision_score
 import json
 
 # Define the initial layers of the CNN (Client)
@@ -28,12 +29,6 @@ def create_final_model():
 x_train, x_test = x_train / 255.0, x_test / 255.0
 x_train, x_test = np.expand_dims(x_train, -1), np.expand_dims(x_test, -1)
 
-# Split the data for demonstration purposes
-x_train_client = x_train[:30000]
-y_train_client = y_train[:30000]
-x_train_server = x_train[30000:]
-y_train_server = y_train[30000:]
-
 # Create initial and final models
 initial_model = create_initial_model()
 final_model = create_final_model()
@@ -44,17 +39,18 @@ final_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', me
 # Training loop
 for epoch in range(1):
     # Forward pass through initial model
-    initial_activations = initial_model.predict(x_train_client)
+    initial_activations = initial_model.predict(x_train)
     
     # Send activations to server
     response = requests.post("http://localhost:5001/process_activations", json={"activations": initial_activations.tolist()})
     server_activations = np.array(response.json()["activations"])
     
-    # Forward pass through final model
-    final_model.fit(server_activations, y_train_client, epochs=1, verbose=0)
+    # Train the final model using true labels
+    final_model.fit(server_activations, y_train, epochs=1, verbose=0)
 
 # Evaluate final model on training set
-train_loss, train_accuracy = final_model.evaluate(server_activations, y_train_client, verbose=0)
+train_predictions = final_model.predict(server_activations)
+train_accuracy = np.mean(np.argmax(train_predictions, axis=1) == y_train)
 print(f'Training Accuracy: {train_accuracy:.4f}')
 
 # Evaluate final model on test set
