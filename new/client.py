@@ -4,7 +4,6 @@ from tensorflow.keras.datasets import mnist
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
 import requests
-import json
 
 # Define the initial layers of the CNN (Client)
 def create_initial_model():
@@ -18,8 +17,9 @@ def create_initial_model():
 
 # Define the final layers of the CNN (Client)
 def create_final_model():
-    input_layer = Input(shape=(64,))
-    x = Dense(10, activation='softmax')(input_layer)
+    input_layer = Input(shape=(128,))  # Adjusted shape to match server output
+    x = Dense(64, activation='relu')(input_layer)
+    x = Dense(10, activation='softmax')(x)  # Adjusted output layer for classification
     model = Model(inputs=input_layer, outputs=x)
     return model
 
@@ -27,12 +27,6 @@ def create_final_model():
 (x_train, y_train), (x_test, y_test) = mnist.load_data()
 x_train, x_test = x_train / 255.0, x_test / 255.0
 x_train, x_test = np.expand_dims(x_train, -1), np.expand_dims(x_test, -1)
-
-# Split the data for demonstration purposes
-x_train_client = x_train[:30000]
-y_train_client = y_train[:30000]
-x_train_server = x_train[30000:]
-y_train_server = y_train[30000:]
 
 # Create initial and final models
 initial_model = create_initial_model()
@@ -44,24 +38,42 @@ final_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', me
 # Training loop
 for epoch in range(1):
     # Forward pass through initial model
-    initial_activations = initial_model.predict(x_train_client)
+    initial_activations = initial_model.predict(x_train)
     
     # Send activations to server
     response = requests.post("http://localhost:5001/process_activations", json={"activations": initial_activations.tolist()})
-    server_activations = np.array(response.json()["activations"])
+    server_activations = np.array(response.json()["activations"], dtype=np.float32)
     
-    # Forward pass through final model
-    final_model.fit(server_activations, y_train_client, epochs=1, verbose=0)
+    # Convert server activations to tensor
+    server_activations = tf.convert_to_tensor(server_activations, dtype=tf.float32)
 
-# Evaluate final model on training set
-train_loss, train_accuracy = final_model.evaluate(server_activations, y_train_client, verbose=0)
-print(f'Training Accuracy: {train_accuracy:.4f}')
+    # Train the final model with server activations
+    with tf.GradientTape() as tape:
+        predictions = final_model(server_activations, training=True)
+        loss = tf.keras.losses.sparse_categorical_crossentropy(y_train, predictions)
+    
+    # Compute gradients
+    grads = tape.gradient(loss, final_model.trainable_variables)
+    
+    # Apply gradients to update model
+    final_model.optimizer.apply_gradients(zip(grads, final_model.trainable_variables))
+    
+    # Calculate training accuracy
+    train_accuracy = np.mean(np.argmax(predictions.numpy(), axis=1) == y_train)
+    print(f'Training Accuracy: {train_accuracy:.4f}')
+    
+    # Send model weights to server
+    model_weights = final_model.get_weights()[:2]  # Send the first 2 weights
+    response = requests.post("http://localhost:5001/update_model", json={"model_weights": [w.tolist() for w in model_weights]})
+    print(response.json())
 
 # Evaluate final model on test set
 try:
-    x_test_client = create_initial_model().predict(x_test)
+    x_test_client = initial_model.predict(x_test)
     response = requests.post("http://localhost:5001/process_activations", json={"activations": x_test_client.tolist()})
-    x_test_server = np.array(response.json()["activations"])
+    x_test_server = np.array(response.json()["activations"], dtype=np.float32)
+
+    x_test_server = tf.convert_to_tensor(x_test_server, dtype=tf.float32)
     x_test_final = final_model.predict(x_test_server)
     
     test_accuracy = np.mean(np.argmax(x_test_final, axis=1) == y_test)
