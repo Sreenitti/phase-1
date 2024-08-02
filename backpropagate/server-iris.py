@@ -17,11 +17,19 @@ def create_server_model():
 # Create the server model
 server_model = create_server_model()
 
+# Define an optimizer for updating the server model's weights
+optimizer = tf.keras.optimizers.Adam()
+
+# Storage for activations received from the client
+received_activations = None
+
 @app.route('/process_activations', methods=['POST'])
 def process_activations():
+    global received_activations
     try:
         data = request.get_json()
         activations = np.array(data["activations"])
+        received_activations = activations  # Store activations for later use
         server_activations = server_model.predict(activations)
         response = {
             "activations": server_activations.tolist()
@@ -33,22 +41,36 @@ def process_activations():
 
 @app.route('/backpropagate', methods=['POST'])
 def backpropagate():
+    global received_activations
+    if received_activations is None:
+        return jsonify({"error": "No activations received for backpropagation"}), 400
+    
     try:
         data = request.get_json()
         grads = np.array(data["grads"])
         
-        # Convert to TensorFlow tensor
+        # Convert gradients to TensorFlow tensor
         grads_tensor = tf.convert_to_tensor(grads, dtype=tf.float32)
-        
-        # Dummy variable to hold inputs to server_model
-        dummy_input = np.random.rand(*grads.shape).astype(np.float32)
-        dummy_input_tensor = tf.convert_to_tensor(dummy_input, dtype=tf.float32)
-        
+
+        # Create a TensorFlow tensor for the received activations
+        received_activations_tensor = tf.convert_to_tensor(received_activations, dtype=tf.float32)
+
+        # Use the activations to calculate gradients with respect to the server model
         with tf.GradientTape() as tape:
-            tape.watch(dummy_input_tensor)
-            outputs = server_model(dummy_input_tensor)
+            tape.watch(received_activations_tensor)
+            outputs = server_model(received_activations_tensor)
         
-        grads_input = tape.gradient(outputs, dummy_input_tensor, output_gradients=grads_tensor)
+        # Calculate gradients of the server model with respect to the received activations
+        grads_input = tape.gradient(outputs, received_activations_tensor, output_gradients=grads_tensor)
+        
+        # Update the server model with the gradients
+        with tf.GradientTape() as tape:
+            tape.watch(server_model.trainable_variables)
+            server_outputs = server_model(received_activations_tensor)
+            loss = tf.reduce_mean(tf.losses.mean_squared_error(outputs, server_outputs))
+        
+        grads_model = tape.gradient(loss, server_model.trainable_variables)
+        optimizer.apply_gradients(zip(grads_model, server_model.trainable_variables))
         
         response = {
             "grads": grads_input.numpy().tolist()

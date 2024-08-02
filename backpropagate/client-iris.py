@@ -43,7 +43,7 @@ initial_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='mean_sq
 final_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
 # Training loop
-for epoch in range(20):  # Adjust epochs as needed
+for epoch in range(15):  # Adjust epochs as needed
     logging.info('Epoch %d', epoch + 1)
     
     # Forward pass through initial model
