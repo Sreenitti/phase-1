@@ -1,21 +1,26 @@
 import numpy as np
 import tensorflow as tf
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
+from tensorflow.keras.datasets import mnist
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
 import requests
 import logging
+from tensorflow.keras.layers import BatchNormalization
 
-# Configure logging
+# Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Define the initial layers of the model (Client)
 def create_initial_model():
-    input_layer = Input(shape=(4,))
-    x = Dense(128, activation='relu')(input_layer)
+    input_layer = Input(shape=(784,))
+    x = Dense(512, activation='relu')(input_layer)
+    x = BatchNormalization()(x) 
+    x = Dense(256, activation='relu')(x)
+    x = BatchNormalization()(x) 
     x = Dense(128, activation='relu')(x)
+    x = BatchNormalization()(x) 
     x = Dense(64, activation='relu')(x)
+    x = BatchNormalization()(x) 
     model = Model(inputs=input_layer, outputs=x)
     return model
 
@@ -23,14 +28,20 @@ def create_initial_model():
 def create_final_model():
     input_layer = Input(shape=(64,))
     x = Dense(64, activation='relu')(input_layer)
+    x = BatchNormalization()(x) 
     x = Dense(32, activation='relu')(x)
-    x = Dense(3, activation='softmax')(x)
+    x = BatchNormalization()(x) 
+    x = Dense(10, activation='softmax')(x)
     model = Model(inputs=input_layer, outputs=x)
     return model
 
+
 # Load and preprocess data
-iris = load_iris()
-x_train, x_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
+
+# Flatten images and normalize pixel values
+x_train = x_train.reshape(-1, 784).astype('float32') / 255.0
+x_test = x_test.reshape(-1, 784).astype('float32') / 255.0
 
 # Create initial and final models
 initial_model = create_initial_model()
@@ -42,6 +53,7 @@ initial_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='mean_sq
 # Compile the final model
 final_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
+train_acc = []
 # Training loop
 for epoch in range(15):  # Adjust epochs as needed
     logging.info('Epoch %d', epoch + 1)
@@ -53,7 +65,7 @@ for epoch in range(15):  # Adjust epochs as needed
     
     # Send activations to server
     logging.info('Sending activations to server...')
-    response = requests.post("http://localhost:5001/process_activations", json={"activations": initial_activations.numpy().tolist()})
+    response = requests.post("http://localhost:5002/process_activations", json={"activations": initial_activations.numpy().tolist()})
     server_activations = np.array(response.json()["activations"])
     logging.info('Server responded with processed activations.')
 
@@ -88,7 +100,7 @@ for epoch in range(15):  # Adjust epochs as needed
         
         # Send gradients of server activations back to server
         logging.info('Sending gradients of server activations to server...')
-        response = requests.post("http://localhost:5001/backpropagate", json={"grads": grads_initial_activations.numpy().tolist()})
+        response = requests.post("http://localhost:5002/backpropagate", json={"grads": grads_initial_activations.numpy().tolist()})
         logging.info('Server responded with gradients processing.')
 
         try:
@@ -113,17 +125,24 @@ for epoch in range(15):  # Adjust epochs as needed
         else:
             logging.error("Error: Initial model optimizer is None")
 
+    
+    logging.info('Evaluating on training data...')
+    train_loss, train_accuracy = final_model.evaluate(server_activations, y_train, verbose=0)
+    logging.info('Epoch: %d, Training Accuracy: %.4f', epoch+1, train_accuracy)
+    train_acc.append(train_accuracy)
+
 # Evaluate final model on training set
 logging.info('Evaluating final model on training set...')
 train_predictions = final_model.predict(server_activations)
 train_accuracy = np.mean(np.argmax(train_predictions, axis=1) == y_train)
 logging.info('Training Accuracy: %.4f', train_accuracy)
+print("TRAINING ACCURACY ARRAY : ", train_acc)
 
 # Evaluate final model on test set
 try:
     logging.info('Evaluating final model on test set...')
     x_test_client = initial_model.predict(x_test)
-    response = requests.post("http://localhost:5001/process_activations", json={"activations": x_test_client.tolist()})
+    response = requests.post("http://localhost:5002/process_activations", json={"activations": x_test_client.tolist()})
     x_test_server = np.array(response.json()["activations"])
     x_test_final = final_model.predict(x_test_server)
     

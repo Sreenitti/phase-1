@@ -20,76 +20,83 @@ server_model = create_server_model()
 # Define an optimizer for updating the server model's weights
 optimizer = tf.keras.optimizers.Adam()
 
-# Storage for activations received from clients
-received_activations_client1 = None
-received_activations_client2 = None
+# Storage for activations received from the clients
+received_activations = []
 
-@app.route('/process_activations_client1', methods=['POST'])
-def process_activations_client1():
-    global received_activations_client1
+@app.route('/process_activations', methods=['POST'])
+def process_activations():
+    global received_activations
     try:
         data = request.get_json()
-        activations = np.array(data["activations"])
-        received_activations_client1 = activations  # Store activations for client 1
-        server_activations = server_model.predict(activations)
-        response = {
-            "activations": server_activations.tolist()
-        }
-        return jsonify(response)
-    except Exception as e:
-        print(f"Error processing request from client 1: {e}")
-        return jsonify({"error": str(e)}), 500
+        if 'activations' not in data:
+            return jsonify({"error": "Missing 'activations' in request"}), 400
 
-@app.route('/process_activations_client2', methods=['POST'])
-def process_activations_client2():
-    global received_activations_client2
-    try:
-        data = request.get_json()
         activations = np.array(data["activations"])
-        received_activations_client2 = activations  # Store activations for client 2
-        server_activations = server_model.predict(activations)
-        response = {
-            "activations": server_activations.tolist()
-        }
-        return jsonify(response)
+
+        if activations.ndim == 1:
+            activations = activations.reshape(1, -1)  # Ensure it is 2D
+
+        if activations.shape[1] != 64:
+            return jsonify({"error": "Activations shape mismatch"}), 400
+
+        received_activations.append(activations)
+
+        if len(received_activations) == 2:
+            # Aggregate activations
+            aggregated_activations = np.mean(np.vstack(received_activations), axis=0)
+            aggregated_activations = aggregated_activations.reshape(1, -1)  # Ensure it is 2D
+            
+            # Ensure tensor is 2D
+            tensor_activations = tf.convert_to_tensor(aggregated_activations, dtype=tf.float32)
+            server_activations = server_model(tensor_activations)
+            
+            response = {
+                "activations": server_activations.numpy().tolist()
+            }
+            received_activations.clear()  # Reset for the next round
+            return jsonify(response)
+        else:
+            return jsonify({"status": "waiting for more activations"}), 202
     except Exception as e:
-        print(f"Error processing request from client 2: {e}")
+        print(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/backpropagate', methods=['POST'])
 def backpropagate():
-    global received_activations_client1, received_activations_client2
-    if received_activations_client1 is None or received_activations_client2 is None:
-        return jsonify({"error": "Not all activations received for backpropagation"}), 400
-    
     try:
         data = request.get_json()
-        grads_client1 = np.array(data["grads_client1"])
-        grads_client2 = np.array(data["grads_client2"])
-        
-        # Convert gradients to TensorFlow tensors
-        grads_client1_tensor = tf.convert_to_tensor(grads_client1, dtype=tf.float32)
-        grads_client2_tensor = tf.convert_to_tensor(grads_client2, dtype=tf.float32)
-        
-        # Calculate gradients and update server model
+        if 'grads' not in data:
+            return jsonify({"error": "Missing 'grads' in request"}), 400
+
+        grads = np.array(data["grads"])
+
+        if grads.ndim == 1:
+            grads = grads.reshape(1, -1)  # Ensure it is 2D
+
+        if grads.shape[1] != 64:
+            return jsonify({"error": "Grads shape mismatch"}), 400
+
+        grads_tensor = tf.convert_to_tensor(grads, dtype=tf.float32)
+
+        # Ensure activations are correctly shaped
+        aggregated_activations = np.mean(np.vstack(received_activations), axis=0)
+        aggregated_activations = aggregated_activations.reshape(1, -1)  # Ensure it is 2D
+
         with tf.GradientTape() as tape:
-            tape.watch(server_model.trainable_variables)
-            output_client1 = server_model(received_activations_client1)
-            output_client2 = server_model(received_activations_client2)
-            loss = tf.reduce_mean(tf.losses.mean_squared_error(output_client1, output_client2))
-        
+            # Ensure activations are correctly shaped
+            tensor_activations = tf.convert_to_tensor(aggregated_activations, dtype=tf.float32)
+            server_outputs = server_model(tensor_activations)
+            loss = tf.reduce_mean(tf.losses.mean_squared_error(server_outputs, server_outputs))
+
         grads_model = tape.gradient(loss, server_model.trainable_variables)
         optimizer.apply_gradients(zip(grads_model, server_model.trainable_variables))
-        
-        # Aggregate gradients from both clients
-        avg_grads = (grads_client1_tensor + grads_client2_tensor) / 2
-        
+
         response = {
-            "grads": avg_grads.numpy().tolist()
+            "grads": grads_tensor.numpy().tolist()
         }
         return jsonify(response)
     except Exception as e:
-        print(f"Error processing backpropagation request: {e}")
+        print(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

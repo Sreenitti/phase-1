@@ -1,35 +1,36 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.datasets import mnist
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
+from tensorflow.keras.layers import Input, Dense
 import requests
 import logging
 
-# Configure logging
+# Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Define the initial layers of the CNN (Client)
+# Define the initial layers of the model (Client)
 def create_initial_model():
-    input_layer = Input(shape=(28, 28, 1))
-    x = Conv2D(32, (3, 3), activation='relu')(input_layer)
-    x = MaxPooling2D((2, 2))(x)
-    x = Flatten()(x)
+    input_layer = Input(shape=(4,))
+    x = Dense(128, activation='relu')(input_layer)
+    x = Dense(128, activation='relu')(x)
     x = Dense(64, activation='relu')(x)
     model = Model(inputs=input_layer, outputs=x)
     return model
 
-# Define the final layers of the CNN (Client)
+# Define the final layers of the model (Client)
 def create_final_model():
     input_layer = Input(shape=(64,))
-    x = Dense(10, activation='softmax')(input_layer)
+    x = Dense(64, activation='relu')(input_layer)
+    x = Dense(32, activation='relu')(x)
+    x = Dense(3, activation='softmax')(x)
     model = Model(inputs=input_layer, outputs=x)
     return model
 
 # Load and preprocess data
-(x_train, y_train), (x_test, y_test) = mnist.load_data()
-x_train, x_test = x_train / 255.0, x_test / 255.0
-x_train, x_test = np.expand_dims(x_train, -1), np.expand_dims(x_test, -1)
+iris = load_iris()
+x_train, x_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
 
 # Create initial and final models
 initial_model = create_initial_model()
@@ -42,7 +43,7 @@ initial_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='mean_sq
 final_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
 # Training loop
-for epoch in range(1):
+for epoch in range(12):  # Adjust epochs as needed
     logging.info('Epoch %d', epoch + 1)
     
     # Forward pass through initial model
@@ -60,10 +61,10 @@ for epoch in range(1):
     logging.info('Training the final model...')
     final_model.fit(server_activations, y_train, epochs=1, verbose=1)
     logging.info('Final model training step complete.')
+    
     with tf.GradientTape() as tape:
         predictions = final_model(server_activations, training=True)
         loss = tf.keras.losses.sparse_categorical_crossentropy(y_train, predictions)
-        
     
     # Compute gradients for the final model
     gradients = tape.gradient(loss, final_model.trainable_variables)
