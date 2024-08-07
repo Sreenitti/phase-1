@@ -1,125 +1,122 @@
 import numpy as np
 import tensorflow as tf
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
+from tensorflow.keras.datasets import mnist
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.layers import Input, Dense, BatchNormalization
 import requests
-import logging
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Function to create a model with a specified number of dense layers
-def create_model(input_shape, layers):
-    input_layer = Input(shape=input_shape)
-    x = input_layer
-    for units in layers:
-        x = Dense(units, activation='relu')(x)
+# Define the initial layers of the CNN (Client) with varying layers
+def create_initial_model(num_dense_layers=1):
+    input_layer = Input(shape=(784,))
+    x = BatchNormalization()(input_layer)
+    for _ in range(num_dense_layers):
+        x = Dense(256, activation='relu')(x)
+        x = BatchNormalization()(x)
+    x = Dense(64, activation='relu')(x)
+    x = BatchNormalization()(x)
     model = Model(inputs=input_layer, outputs=x)
     return model
 
-# Function to perform the training and evaluation
-def perform_training(client_layers, server_layers, epochs):
-    # Load and preprocess data
-    iris = load_iris()
-    x_train, x_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
+# Define the final layers of the CNN (Client) with varying layers
+def create_final_model(num_dense_layers=1):
+    input_layer = Input(shape=(64,))
+    x = BatchNormalization()(input_layer)
+    for _ in range(num_dense_layers):
+        x = Dense(32, activation='relu')(x)
+        x = BatchNormalization()(x)
+    x = Dense(10, activation='softmax')(x)
+    model = Model(inputs=input_layer, outputs=x)
+    return model
+
+# Load and preprocess data
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
+x_train = x_train.reshape(-1, 784).astype('float32') / 255.0
+x_test = x_test.reshape(-1, 784).astype('float32') / 255.0
+
+# Experiment with different numbers of layers
+num_dense_layers_list = [8, 9, 10]  # Number of dense layers to experiment with
+
+# Store results
+results = []
+
+for num_dense_layers in num_dense_layers_list:
+    print(f"Testing with {num_dense_layers} dense layers")
 
     # Create initial and final models
-    initial_model = create_model(input_shape=(4,), layers=client_layers)
-    final_model = create_model(input_shape=(64,), layers=[64, 32, 3])
-
-    # Compile the initial model with legacy optimizer
-    initial_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='mean_squared_error')
+    initial_model = create_initial_model(num_dense_layers)
+    final_model = create_final_model(num_dense_layers)
 
     # Compile the final model
-    final_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    final_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
     # Training loop
-    for epoch in range(epochs):
-        logging.info('Epoch %d', epoch + 1)
-        
+    for epoch in range(15):  # Training for 10 epochs
         # Forward pass through initial model
-        initial_activations = initial_model(x_train, training=False)
-        
+        initial_activations = initial_model.predict(x_train)
+
         # Send activations to server
-        response = requests.post("http://localhost:5001/process_activations", json={"activations": initial_activations.numpy().tolist()})
+        response = requests.post(
+            "http://localhost:5001/process_activations",
+            json={"activations": initial_activations.tolist()}
+        )
         server_activations = np.array(response.json()["activations"])
 
         # Train the final model using true labels
         final_model.fit(server_activations, y_train, epochs=1, verbose=0)
-        
-        with tf.GradientTape() as tape:
-            predictions = final_model(server_activations, training=True)
-            loss = tf.keras.losses.sparse_categorical_crossentropy(y_train, predictions)
-        
-        # Compute gradients for the final model
-        gradients = tape.gradient(loss, final_model.trainable_variables)
-        final_model.optimizer.apply_gradients(zip(gradients, final_model.trainable_variables))
-
-        # Compute gradients of server activations
-        with tf.GradientTape() as tape:
-            tape.watch(initial_activations)
-            predictions = final_model(initial_activations, training=False)
-            loss = tf.keras.losses.sparse_categorical_crossentropy(y_train, predictions)
-        
-        grads_initial_activations = tape.gradient(loss, initial_activations)
-        
-        grads_initial_activations = tf.convert_to_tensor(grads_initial_activations, dtype=tf.float32)
-        
-        # Send gradients of server activations back to server
-        response = requests.post("http://localhost:5001/backpropagate", json={"grads": grads_initial_activations.numpy().tolist()})
-
-        grads_initial_activations = np.array(response.json()["grads"])
-
-        # Perform backpropagation on initial model
-        with tf.GradientTape() as tape:
-            initial_outputs = initial_model(x_train, training=True)
-        
-        grads_initial_activations = tf.convert_to_tensor(grads_initial_activations, dtype=tf.float32)
-        
-        grads = tape.gradient(initial_outputs, initial_model.trainable_variables, output_gradients=grads_initial_activations)
-        initial_model.optimizer.apply_gradients(zip(grads, initial_model.trainable_variables))
 
     # Evaluate final model on training set
     train_predictions = final_model.predict(server_activations)
-    train_accuracy = np.mean(np.argmax(train_predictions, axis=1) == y_train)
+    train_accuracy = accuracy_score(y_train, np.argmax(train_predictions, axis=1))
+    train_precision = precision_score(y_train, np.argmax(train_predictions, axis=1), average='weighted', zero_division=0)
+    train_recall = recall_score(y_train, np.argmax(train_predictions, axis=1), average='weighted', zero_division=0)
+    train_f1 = f1_score(y_train, np.argmax(train_predictions, axis=1), average='weighted', zero_division=0)
+
+    print(f'Training Metrics with {num_dense_layers} dense layers:')
+    print(f'Accuracy: {train_accuracy:.4f}')
+    print(f'Precision: {train_precision:.4f}')
+    print(f'Recall: {train_recall:.4f}')
+    print(f'F1 Score: {train_f1:.4f}')
 
     # Evaluate final model on test set
-    x_test_client = initial_model.predict(x_test)
-    response = requests.post("http://localhost:5001/process_activations", json={"activations": x_test_client.tolist()})
-    x_test_server = np.array(response.json()["activations"])
-    x_test_final = final_model.predict(x_test_server)
-    
-    test_accuracy = np.mean(np.argmax(x_test_final, axis=1) == y_test)
+    try:
+        x_test_client = create_initial_model(num_dense_layers).predict(x_test)
+        response = requests.post(
+            "http://localhost:5001/process_activations",
+            json={"activations": x_test_client.tolist()}
+        )
+        x_test_server = np.array(response.json()["activations"])
+        x_test_final = final_model.predict(x_test_server)
 
-    return train_accuracy, test_accuracy
+        test_accuracy = accuracy_score(y_test, np.argmax(x_test_final, axis=1))
+        test_precision = precision_score(y_test, np.argmax(x_test_final, axis=1), average='weighted', zero_division=0)
+        test_recall = recall_score(y_test, np.argmax(x_test_final, axis=1), average='weighted', zero_division=0)
+        test_f1 = f1_score(y_test, np.argmax(x_test_final, axis=1), average='weighted', zero_division=0)
 
-# Analyze results for different configurations
-def analyze_results():
-    results = []
-    epoch_cases = [5, 10]
-    
-    for epochs in epoch_cases:
-        for client_layers in range(1, 3):  # Client layers from 1 to 2
-            for server_layers in range(1, 3):  # Server layers from 1 to 2
-                train_accuracy, test_accuracy = perform_training(
-                    client_layers=[128] * client_layers, 
-                    server_layers=[128] * server_layers, 
-                    epochs=epochs
-                )
-                results.append({
-                    'epochs': epochs,
-                    'client_layers': client_layers,
-                    'server_layers': server_layers,
-                    'train_accuracy': train_accuracy,
-                    'test_accuracy': test_accuracy
-                })
-                logging.info(f"Epochs: {epochs}, Client Layers: {client_layers}, Server Layers: {server_layers}, Train Accuracy: {train_accuracy:.4f}, Test Accuracy: {test_accuracy:.4f}")
-    
-    return results
+        results.append({
+            "num_dense_layers": num_dense_layers,
+            "train_accuracy": train_accuracy,
+            "train_precision": train_precision,
+            "train_recall": train_recall,
+            "train_f1": train_f1,
+            "test_accuracy": test_accuracy,
+            "test_precision": test_precision,
+            "test_recall": test_recall,
+            "test_f1": test_f1
+        })
 
-if __name__ == "__main__":
-    results = analyze_results()
-    for result in results:
-        print(result)
+        print(f'Test Metrics with {num_dense_layers} dense layers:')
+        print(f'Accuracy: {test_accuracy:.4f}')
+        print(f'Precision: {test_precision:.4f}')
+        print(f'Recall: {test_recall:.4f}')
+        print(f'F1 Score: {test_f1:.4f}')
+
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+    except (ValueError, KeyError) as e:
+        print(f"Error decoding response: {e}")
+
+# Print all results after testing all combinations
+print("\nSummary of all tests:")
+for result in results:
+    print(result)
