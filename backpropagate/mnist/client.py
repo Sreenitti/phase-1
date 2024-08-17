@@ -55,7 +55,7 @@ final_model.compile(optimizer=tf.keras.optimizers.legacy.Adam(), loss='sparse_ca
 
 train_acc = []
 # Training loop
-for epoch in range(15):  # Adjust epochs as needed
+for epoch in range(50):  # Adjust epochs as needed
     logging.info('Epoch %d', epoch + 1)
     
     # Forward pass through initial model
